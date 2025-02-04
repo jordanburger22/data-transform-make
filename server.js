@@ -8,7 +8,8 @@ const app = express();
 const PORT = process.env.PORT;
 
 // Use a raw text parser so we can inspect and sanitize the body.
-app.use(express.text({ type: '*/*' }));
+app.use(express.text({ type: '*/*', limit: '5mb' }));
+
 
 // Middleware to log the raw body (for debugging)
 app.use((req, res, next) => {
