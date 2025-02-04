@@ -7,31 +7,39 @@ const cors = require('cors');
 const app = express();
 const PORT = process.env.PORT;
 
-app.use(express.json());
-app.use(morgan('dev'));
-app.use(cors());
+// Log the raw body (for debugging)
+// Use express.text() temporarily to capture raw text.
+app.use(express.text({ type: '*/*' }));
 
-// Middleware to catch JSON parse errors
-app.use((err, req, res, next) => {
-  if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
-    console.error('Bad JSON:', err);
-    return res.status(400).json({ error: 'Invalid JSON payload' });
-  }
+app.use((req, res, next) => {
+  console.log('Raw body:', req.body);
   next();
 });
 
+// Now try to parse JSON from the raw body
+app.use((req, res, next) => {
+  try {
+    // If the body is already an object (because it's empty or already parsed), skip parsing.
+    if (typeof req.body === 'string') {
+      req.body = JSON.parse(req.body);
+    }
+    next();
+  } catch (error) {
+    console.error('JSON parsing error:', error);
+    return res.status(400).json({ error: 'Invalid JSON payload' });
+  }
+});
+
+app.use(morgan('dev'));
+app.use(cors());
+
 app.use('/wattsbags', makeRouter);
 
-// Optional: Final error-handling middleware for any unhandled errors
 app.use((err, req, res, next) => {
   console.error('Unhandled error:', err);
   res.status(500).json({ error: 'Internal Server Error' });
 });
 
-app.listen(PORT, (err) => {
-  if (err) {
-    console.error('Error starting server:', err);
-  } else {
-    console.log(`Server running on PORT: ${PORT}`);
-  }
+app.listen(PORT, () => {
+  console.log(`Server running on PORT: ${PORT}`);
 });
