@@ -1,78 +1,123 @@
 const express = require('express');
 const makeRouter = express.Router();
 
-makeRouter.post('/process-order', (req, res, next) => {
-  try {
-    // The request body is expected to be an array of line items.
-    const lineItems = req.body;
-    if (!Array.isArray(lineItems)) {
-      throw new Error('Invalid data: expected request body to be an array of line items');
-    }
-
-    // Process each line item.
-    const transformedLineItems = lineItems.map(item => {
-      let transformedMetaData = {};
-      let currentEmbroideryGroup = null; // To track the active embroidery context
-
-      // Use item.metaData (note the lowercase) if it exists.
-      if (Array.isArray(item.metaData)) {
-        item.metaData.forEach(meta => {
-          // Only process entries with a string value (ignore if the value is an array)
-          if (meta.value && typeof meta.value === 'string' && !meta.valueArray) {
-            if (meta.displayKey && meta.displayKey.endsWith("Embroidery Position")) {
-              // Derive a group name by removing " Position" from the displayKey.
-              const groupName = meta.displayKey.replace(" Position", "");
-              currentEmbroideryGroup = groupName;
-              // Initialize the group if it doesn't exist.
-              if (!transformedMetaData[currentEmbroideryGroup]) {
-                transformedMetaData[currentEmbroideryGroup] = {};
-              }
-              // Save the embroidery position value.
-              transformedMetaData[currentEmbroideryGroup]["Position"] = meta.value;
-            } else if (
-              meta.displayKey === "Line 1" ||
-              meta.displayKey === "Line 1 Text Font" ||
-              meta.displayKey === "Line 2" ||
-              meta.displayKey === "Line 2 Text Font"
-            ) {
-              // If an embroidery group is active, store these keys inside that group.
-              if (currentEmbroideryGroup) {
-                transformedMetaData[currentEmbroideryGroup][meta.displayKey] = meta.value;
-              } else {
-                // Otherwise, store it at the top level.
-                transformedMetaData[meta.displayKey] = meta.value;
-              }
-            } else {
-              // For any other meta data, store it at the top level.
-              transformedMetaData[meta.displayKey] = meta.value;
+/**
+ * Combines embroidery group information from the metaData object into a single multi‐line string.
+ * For each embroidery group (determined by the presence of a "Position" property),
+ * the function formats all the key/value pairs in that group, skipping any where the value is "No".
+ */
+function combineEmbroideryInfo(metaData) {
+    let combined = '';
+    for (const key in metaData) {
+        const group = metaData[key];
+        // If this group appears to be an embroidery group (has a "Position" property)
+        if (group && typeof group === 'object' && group.Position) {
+            let groupText = `${key}:\n`;
+            for (const subKey in group) {
+                if (group[subKey] === "No") continue; // Skip if the value is "No"
+                groupText += `  ${subKey}: ${group[subKey]}\n`;
             }
-          }
-        });
-      }
+            if (groupText.trim()) {
+                combined += groupText + "\n";
+            }
+        }
+    }
+    return combined.trim();
+}
 
-      // Combine the line item information with the transformed meta data.
-      return {
-        ID: item.id,           // using lowercase property names from the payload
-        Name: item.name,
-        Quantity: item.quantity,
-        Subtotal: item.subtotal,
-        Total: item.total,
-        Taxes: item.taxes,     // taxes is an empty array in your example
-        MetaData: transformedMetaData
-      };
-    });
+/**
+ * Transforms the final order object into a simplified record suitable for Kintone,
+ * where each key maps directly to its value.
+ * This example uses only the first line item.
+ */
+function transformToSimpleRecord(finalOrderObject) {
+    const item = finalOrderObject.order[0]; // Use the first line item
+    const embroideryInfo = combineEmbroideryInfo(item.MetaData);
 
-    // Build the final JSON object for the entire order.
-    const finalOrderObject = {
-      order: transformedLineItems
+    return {
+        bag_lookup_website: `${item.productId} - ${item.MetaData["Color Selection"] || ""}`,
+        bag_model_website: item.Name, // Use the Name from Make as the bag model.
+        bag_color_website: item.MetaData["Color Selection"] || "",
+        qty_website: String(item.Quantity),
+        rate_website: item.Subtotal,
+        total_website: item.Total,
+        rigid_lightened_website: item.MetaData["Rigid or Lightened Selection"] || "",
+        divider_website: item.MetaData["Divider Option Selection"] || "",
+        wheel_option_website: item.MetaData["Wheel Type"] || "",
+        logo_website: item.MetaData["Company Logo"] || "",
+        order_details_website: embroideryInfo,
+        // Set notes_website using the value from the "Additional Notes" key in meta data.
+        notes_website: item.MetaData["Additional Notes"] || ""
     };
+}
 
-    // Send the transformed order object as a JSON response.
-    return res.status(200).json(finalOrderObject);
-  } catch (error) {
-    // Pass any errors to the error-handling middleware.
-    next(error);
-  }
+makeRouter.post('/process-order', (req, res, next) => {
+    try {
+        // The request body is expected to be an array of line items.
+        const lineItems = req.body;
+        if (!Array.isArray(lineItems)) {
+            throw new Error('Invalid data: expected request body to be an array of line items');
+        }
+
+        // Process each line item.
+        const transformedLineItems = lineItems.map(item => {
+            let transformedMetaData = {};
+            let currentEmbroideryGroup = null; // To track the active embroidery context
+
+            // Process the meta data (key is "metaData" in the payload).
+            if (Array.isArray(item.metaData)) {
+                item.metaData.forEach(meta => {
+                    // Only process entries with a string value (ignore if the value is an array)
+                    if (meta.value && typeof meta.value === 'string' && !meta.valueArray) {
+                        if (meta.displayKey && meta.displayKey.endsWith("Embroidery Position")) {
+                            // Derive a group name by removing " Position" from the displayKey.
+                            const groupName = meta.displayKey.replace(" Position", "");
+                            currentEmbroideryGroup = groupName;
+                            if (!transformedMetaData[currentEmbroideryGroup]) {
+                                transformedMetaData[currentEmbroideryGroup] = {};
+                            }
+                            transformedMetaData[currentEmbroideryGroup]["Position"] = meta.value;
+                        } else if (
+                            meta.displayKey === "Line 1" ||
+                            meta.displayKey === "Line 1 Text Font" ||
+                            meta.displayKey === "Line 2" ||
+                            meta.displayKey === "Line 2 Text Font"
+                        ) {
+                            if (currentEmbroideryGroup) {
+                                transformedMetaData[currentEmbroideryGroup][meta.displayKey] = meta.value;
+                            } else {
+                                transformedMetaData[meta.displayKey] = meta.value;
+                            }
+                        } else {
+                            transformedMetaData[meta.displayKey] = meta.value;
+                        }
+                    }
+                });
+            }
+
+            return {
+                ID: item.id,
+                Name: item.name,
+                productId: item.productId, // Needed for bag lookup
+                Quantity: item.quantity,
+                Subtotal: item.subtotal,
+                Total: item.total,
+                Taxes: item.taxes,
+                MetaData: transformedMetaData
+            };
+        });
+
+        // Build the final order object.
+        const finalOrderObject = { order: transformedLineItems };
+
+        // Transform the final order object into the simplified Kintone record.
+        const simpleRecord = transformToSimpleRecord(finalOrderObject);
+
+        // Send the simplified record as the JSON response.
+        return res.status(200).json(simpleRecord);
+    } catch (error) {
+        next(error);
+    }
 });
 
 module.exports = makeRouter;
