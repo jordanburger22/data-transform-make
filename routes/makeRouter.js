@@ -26,29 +26,28 @@ function combineEmbroideryInfo(metaData) {
 }
 
 /**
- * Transforms the final order object into a simplified record suitable for Kintone,
+ * Transforms the final order object into an array of simplified records suitable for Kintone,
  * where each key maps directly to its value.
- * This example uses only the first line item.
  */
-function transformToSimpleRecord(finalOrderObject) {
-    const item = finalOrderObject.order[0]; // Use the first line item
-    const embroideryInfo = combineEmbroideryInfo(item.MetaData);
-
-    return {
-        bag_lookup_website: `${item.productId} - ${item.MetaData["Color Selection"] || ""}`,
-        bag_model_website: item.Name, // Use the Name from Make as the bag model.
-        bag_color_website: item.MetaData["Color Selection"] || "",
-        qty_website: String(item.Quantity),
-        rate_website: item.Subtotal,
-        total_website: item.Total,
-        rigid_lightened_website: item.MetaData["Rigid or Lightened Selection"] || "",
-        divider_website: item.MetaData["Divider Option Selection"] || "",
-        wheel_option_website: item.MetaData["Wheel Type"] || "",
-        logo_website: item.MetaData["Company Logo"] || "",
-        order_details_website: embroideryInfo,
-        // Set notes_website using the value from the "Additional Notes" key in meta data.
-        notes_website: item.MetaData["Additional Notes"] || ""
-    };
+function transformToSimpleRecords(finalOrderObject) {
+    return finalOrderObject.order.map(item => {
+        const embroideryInfo = combineEmbroideryInfo(item.MetaData);
+        return {
+            bag_lookup_website: `${item.productId} - ${item.MetaData["Color Selection"] || ""}`,
+            bag_model_website: item.Name, // Use the Name from Make as the bag model.
+            bag_color_website: item.MetaData["Color Selection"] || "",
+            qty_website: String(item.Quantity),
+            rate_website: item.Subtotal,
+            total_website: item.Total,
+            rigid_lightened_website: item.MetaData["Rigid or Lightened Selection"] || "",
+            divider_website: item.MetaData["Divider Option Selection"] || "",
+            wheel_option_website: item.MetaData["Wheel Type"] || "",
+            logo_website: item.MetaData["Company Logo"] || "",
+            order_details_website: embroideryInfo,
+            // Use the value from the "Additional Notes" key in meta data.
+            notes_website: item.MetaData["Additional Notes"] || ""
+        };
+    });
 }
 
 makeRouter.post('/process-order', (req, res, next) => {
@@ -102,7 +101,7 @@ makeRouter.post('/process-order', (req, res, next) => {
                 Quantity: item.quantity,
                 Subtotal: item.subtotal,
                 Total: item.total,
-                Taxes: item.taxes,
+                Taxes: item.taxes, // Expected to be an empty array in your example
                 MetaData: transformedMetaData
             };
         });
@@ -110,11 +109,11 @@ makeRouter.post('/process-order', (req, res, next) => {
         // Build the final order object.
         const finalOrderObject = { order: transformedLineItems };
 
-        // Transform the final order object into the simplified Kintone record.
-        const simpleRecord = transformToSimpleRecord(finalOrderObject);
+        // Transform the final order object into an array of simplified Kintone records.
+        const simpleRecords = transformToSimpleRecords(finalOrderObject);
 
-        // Send the simplified record as the JSON response.
-        return res.status(200).json(simpleRecord);
+        // Send the array of simplified records as the JSON response.
+        return res.status(200).json(simpleRecords);
     } catch (error) {
         next(error);
     }
