@@ -3,6 +3,7 @@ const makeRouter = express.Router();
 
 makeRouter.post('/process-order', (req, res) => {
   // Extract the "Line Items" array from the request body.
+  console.log(req.body)
   const lineItems = req.body["Line Items"];
 
   if (!Array.isArray(lineItems)) {
