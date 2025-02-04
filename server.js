@@ -7,21 +7,28 @@ const cors = require('cors');
 const app = express();
 const PORT = process.env.PORT;
 
-// Log the raw body (for debugging)
-// Use express.text() temporarily to capture raw text.
+// Use a raw text parser so we can inspect and sanitize the body.
 app.use(express.text({ type: '*/*' }));
 
+// Middleware to log the raw body (for debugging)
 app.use((req, res, next) => {
   console.log('Raw body:', req.body);
   next();
 });
 
-// Now try to parse JSON from the raw body
+// Custom middleware to sanitize and parse the raw body as JSON
 app.use((req, res, next) => {
   try {
-    // If the body is already an object (because it's empty or already parsed), skip parsing.
     if (typeof req.body === 'string') {
-      req.body = JSON.parse(req.body);
+      // Remove null bytes and trim the string.
+      const sanitizedBody = req.body.replace(/\0/g, '').trim();
+      
+      // If the sanitized body is empty, set it to an empty object.
+      if (!sanitizedBody) {
+        req.body = {};
+      } else {
+        req.body = JSON.parse(sanitizedBody);
+      }
     }
     next();
   } catch (error) {
@@ -30,11 +37,14 @@ app.use((req, res, next) => {
   }
 });
 
+// Standard middleware
 app.use(morgan('dev'));
 app.use(cors());
 
+// Your route for processing orders
 app.use('/wattsbags', makeRouter);
 
+// Optional: Final error-handling middleware
 app.use((err, req, res, next) => {
   console.error('Unhandled error:', err);
   res.status(500).json({ error: 'Internal Server Error' });
