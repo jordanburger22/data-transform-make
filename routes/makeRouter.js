@@ -74,25 +74,6 @@ function transformToSimpleRecords(finalOrderObject) {
   });
 }
 
-function transformToProcessRecords(data, customer, startStatus) {
-  const records = [];
-  data.order_details_table_website.value.forEach(item => {
-    const qty = parseInt(item.value.qty_website.value);
-    const bagModel = item.value.bag_model_website.value;
-    const inventoryId = item.value.inventory_id.value; // Get inventory_id from the subtable
-    for (let i = 0; i < qty; i++) {
-      records.push({
-        customer: { value: customer },
-        bag_model: { value: bagModel },
-        inventory_id: { value: inventoryId }, // Pass inventory_id to Order Management App
-        Status: { value: startStatus },
-        date_ordered: { value: new Date().toISOString().split('T')[0] }
-      });
-    }
-  });
-  return records;
-}
-
 // Existing WooCommerce Endpoint
 makeRouter.post('/process-order', (req, res, next) => {
   try {
@@ -154,7 +135,6 @@ makeRouter.post('/order-webhook', async (req, res, next) => {
     const { record } = req.body;
     if (record.Status.value !== 'Approved') return res.sendStatus(200);
 
-    const customer = `${record.first_name.value} ${record.last_name.value} - ${record.company_name.value}`;
     const bagDetails = record.order_details_table_website.value;
 
     for (const item of bagDetails) {
@@ -162,8 +142,9 @@ makeRouter.post('/order-webhook', async (req, res, next) => {
       const bagModel = item.value.bag_model_website.value;
       const inventoryId = item.value.inventory_id.value; // Get inventory_id from the subtable
 
-      if (!inventoryId) {
-        throw new Error(`No inventory_id found for bag model: ${bagModel}. Please ensure the Lookup field is set.`);
+      // Skip rows that are empty or missing required fields
+      if (!inventoryId || !bagModel || !qty) {
+        continue; // Skip this row
       }
 
       // Fetch the full inventory record by ID
@@ -190,11 +171,7 @@ makeRouter.post('/order-webhook', async (req, res, next) => {
       }, INVENTORY_APP_ID);
     }
 
-    const processRecords = transformToProcessRecords(record, customer, 'Office');
-    await kintoneRequest('POST', `/v1/records.json?app=${PROCESS_APP_ID}`, {
-      records: processRecords
-    }, PROCESS_APP_ID);
-
+    // No need to create records in the Order Management App; the JavaScript customization handles that
     res.sendStatus(200);
   } catch (error) {
     next(error);
