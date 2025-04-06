@@ -74,61 +74,6 @@ function transformToSimpleRecords(finalOrderObject) {
   });
 }
 
-// Existing WooCommerce Endpoint
-makeRouter.post('/process-order', (req, res, next) => {
-  try {
-    const lineItems = req.body;
-    if (!Array.isArray(lineItems)) {
-      throw new Error('Invalid data: expected request body to be an array of line items');
-    }
-
-    const transformedLineItems = lineItems.map(item => {
-      let transformedMetaData = {};
-      let currentEmbroideryGroup = null;
-
-      if (Array.isArray(item.metaData)) {
-        item.metaData.forEach(meta => {
-          if (meta.value && typeof meta.value === 'string' && !meta.valueArray) {
-            if (meta.displayKey && meta.displayKey.endsWith("Embroidery Position")) {
-              const groupName = meta.displayKey.replace(" Position", "");
-              currentEmbroideryGroup = groupName;
-              if (!transformedMetaData[currentEmbroideryGroup]) transformedMetaData[currentEmbroideryGroup] = {};
-              transformedMetaData[currentEmbroideryGroup]["Position"] = meta.value;
-            } else if (
-              meta.displayKey === "Line 1" ||
-              meta.displayKey === "Line 1 Text Font" ||
-              meta.displayKey === "Line 2" ||
-              meta.displayKey === "Line 2 Text Font"
-            ) {
-              if (currentEmbroideryGroup) transformedMetaData[currentEmbroideryGroup][meta.displayKey] = meta.value;
-              else transformedMetaData[meta.displayKey] = meta.value;
-            } else {
-              transformedMetaData[meta.displayKey] = meta.value;
-            }
-          }
-        });
-      }
-
-      return {
-        ID: item.id,
-        Name: item.name,
-        productId: item.productId,
-        Quantity: item.quantity,
-        Subtotal: item.subtotal,
-        Total: item.total,
-        Taxes: item.taxes,
-        MetaData: transformedMetaData
-      };
-    });
-
-    const finalOrderObject = { order: transformedLineItems };
-    const simpleRecords = transformToSimpleRecords(finalOrderObject);
-    return res.status(200).json(simpleRecords);
-  } catch (error) {
-    next(error);
-  }
-});
-
 // Order Approval Webhook
 makeRouter.post('/order-webhook', async (req, res, next) => {
   try {
@@ -136,6 +81,9 @@ makeRouter.post('/order-webhook', async (req, res, next) => {
     if (record.Status.value !== 'Approved') return res.sendStatus(200);
 
     const bagDetails = record.order_details_table_website.value;
+
+    // Track which inventory records have been updated to avoid duplicate updates
+    const updatedInventoryIds = new Set();
 
     for (const item of bagDetails) {
       const qty = parseInt(item.value.qty_website.value);
@@ -145,6 +93,11 @@ makeRouter.post('/order-webhook', async (req, res, next) => {
       // Skip rows that are empty or missing required fields
       if (!inventoryId || !bagModel || !qty) {
         continue; // Skip this row
+      }
+
+      // Skip if this inventory record has already been updated
+      if (updatedInventoryIds.has(inventoryId)) {
+        continue;
       }
 
       // Fetch the full inventory record by ID
@@ -169,9 +122,11 @@ makeRouter.post('/order-webhook', async (req, res, next) => {
         id: inventoryId,
         record: update
       }, INVENTORY_APP_ID);
+
+      // Mark this inventory record as updated
+      updatedInventoryIds.add(inventoryId);
     }
 
-    // No need to create records in the Order Management App; the JavaScript customization handles that
     res.sendStatus(200);
   } catch (error) {
     next(error);
@@ -181,14 +136,23 @@ makeRouter.post('/order-webhook', async (req, res, next) => {
 // Process Webhook (Bag Movement)
 makeRouter.post('/process-webhook', async (req, res, next) => {
   try {
+    console.log('Received /process-webhook request:', JSON.stringify(req.body, null, 2));
+
     const { record } = req.body;
     const currentStatus = record.Status.value;
     const bagModel = record.bag_model.value;
     const inventoryId = record.inventory_id.value; // Get inventory_id from the Order Management App record
     const previousStatus = record.Previous_Status?.value;
-    if (!previousStatus || previousStatus === currentStatus) return res.sendStatus(200);
+
+    console.log(`Current Status: ${currentStatus}, Previous Status: ${previousStatus}, Inventory ID: ${inventoryId}, Bag Model: ${bagModel}`);
+
+    if (!previousStatus || previousStatus === currentStatus) {
+      console.log('Skipping update: previousStatus is undefined or matches currentStatus');
+      return res.sendStatus(200);
+    }
 
     if (!inventoryId) {
+      console.log('Error: No inventory_id found');
       throw new Error(`No inventory_id found for bag model: ${bagModel}`);
     }
 
@@ -196,14 +160,16 @@ makeRouter.post('/process-webhook', async (req, res, next) => {
     const inventoryRes = await kintoneRequest('GET', `/v1/record.json?app=${INVENTORY_APP_ID}&id=${inventoryId}`, {}, INVENTORY_APP_ID);
     const inventory = inventoryRes.data.record;
 
+    console.log('Fetched inventory record:', JSON.stringify(inventory, null, 2));
+
     const statusMap = {
       'Office': 'qty_office',
       'Warehouse': 'qty_warehouse',
       'Art': 'qty_art',
-      'Cutting': 'qty_cutting',
+      'Cutting': 'qty_embroidery', // Map Cutting to Embroidery inventory
       'Need Sewer Assigned': 'qty_sewer',
       'Sewer Assigned': 'qty_sewer',
-      'Sewer Pickup Ready': 'qty_sewer',
+      'Sewer Pickup': 'qty_sewer', // Map Sewer Pickup to Sewer inventory
       'With Sewer': 'qty_sewer',
       'Embroidery': 'qty_embroidery',
       'Complete': null
@@ -214,15 +180,20 @@ makeRouter.post('/process-webhook', async (req, res, next) => {
     if (statusMap[previousStatus]) {
       const currentQty = parseInt(inventory[statusMap[previousStatus]].value || 0);
       update[statusMap[previousStatus]] = { value: currentQty - 1 };
+      console.log(`Decreasing ${statusMap[previousStatus]} from ${currentQty} to ${currentQty - 1}`);
     }
     if (statusMap[currentStatus]) {
       const currentQty = parseInt(inventory[statusMap[currentStatus]].value || 0);
       update[statusMap[currentStatus]] = { value: currentQty + 1 };
+      console.log(`Increasing ${statusMap[currentStatus]} from ${currentQty} to ${currentQty + 1}`);
     }
     if (currentStatus === 'Complete') {
       const currentCompleted = parseInt(inventory.qty_completed.value || 0);
       update.qty_completed = { value: currentCompleted + 1 };
+      console.log(`Increasing qty_completed from ${currentCompleted} to ${currentCompleted + 1}`);
     }
+
+    console.log('Updating inventory with:', JSON.stringify(update, null, 2));
 
     await kintoneRequest('PUT', `/v1/record.json`, {
       app: INVENTORY_APP_ID,
@@ -230,8 +201,11 @@ makeRouter.post('/process-webhook', async (req, res, next) => {
       record: update
     }, INVENTORY_APP_ID);
 
+    console.log('Inventory update successful');
+
     res.sendStatus(200);
   } catch (error) {
+    console.error('Error in /process-webhook:', error);
     next(error);
   }
 });
