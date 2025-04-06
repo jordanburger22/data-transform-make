@@ -1,8 +1,26 @@
 const express = require('express');
+const axios = require('axios');
 const makeRouter = express.Router();
 
+// Kintone Configuration
+const KINTONE_DOMAIN = 'https://wattsbags.kintone.com';
+const ORDER_APP_ID = '13';
+const PROCESS_APP_ID = '23';
+const INVENTORY_APP_ID = '11';
+const API_TOKEN = 'gHoZ02FI3jbrUCBx5Y3yifsvwBgfvwKWnC4nBHZm';
+
+async function kintoneRequest(method, endpoint, data = {}) {
+  const config = {
+    method,
+    url: `${KINTONE_DOMAIN}${endpoint}`,
+    headers: { 'X-Cybozu-API-Token': API_TOKEN },
+    data
+  };
+  return axios(config);
+}
+
 /**
- * Combines embroidery group information from the metaData object into a single multi‐line string.
+ * Combines embroidery group information from the metaData object into a single multi-line string.
  * For each embroidery group (determined by the presence of a "Position" property),
  * the function formats all the key/value pairs in that group, skipping any where the value is "No".
  */
@@ -10,16 +28,13 @@ function combineEmbroideryInfo(metaData) {
   let combined = '';
   for (const key in metaData) {
     const group = metaData[key];
-    // If this group appears to be an embroidery group (has a "Position" property)
     if (group && typeof group === 'object' && group.Position) {
       let groupText = `${key}:\n`;
       for (const subKey in group) {
-        if (group[subKey] === "No") continue; // Skip if the value is "No"
+        if (group[subKey] === "No") continue;
         groupText += `  ${subKey}: ${group[subKey]}\n`;
       }
-      if (groupText.trim()) {
-        combined += groupText + "\n";
-      }
+      if (groupText.trim()) combined += groupText + "\n";
     }
   }
   return combined.trim();
@@ -33,9 +48,9 @@ function transformToSimpleRecords(finalOrderObject) {
   return finalOrderObject.order.map(item => {
     const embroideryInfo = combineEmbroideryInfo(item.MetaData);
     return {
-      product_id: item.productId,  // New field added here.
+      product_id: item.productId,
       bag_lookup_website: `${item.productId} - ${item.MetaData["Color Selection"] || ""}`,
-      bag_model_website: item.Name, // Use the Name from Make as the bag model.
+      bag_model_website: item.Name,
       bag_color_website: item.MetaData["Color Selection"] || "",
       qty_website: String(item.Quantity),
       rate_website: item.Subtotal,
@@ -45,32 +60,57 @@ function transformToSimpleRecords(finalOrderObject) {
       wheel_option_website: item.MetaData["Wheel Type"] || "",
       logo_website: item.MetaData["Company Logo"] || "",
       order_details_website: embroideryInfo,
-      // Use the value from the "Additional Notes" key in meta data.
       notes_website: item.MetaData["Additional Notes"] || ""
     };
   });
 }
 
+function transformToProcessRecords(data, customer, startStatus) {
+  const records = [];
+  data.order_details_table_website.value.forEach(item => {
+    const qty = parseInt(item.value.qty_website.value);
+    const bagModel = item.value.bag_model_website.value;
+    for (let i = 0; i < qty; i++) {
+      records.push({
+        customer: { value: customer },
+        bag_model: { value: bagModel },
+        Status: { value: startStatus },
+        date_ordered: { value: new Date().toISOString().split('T')[0] }
+      });
+    }
+  });
+  return records;
+}
+
+function updateBreakdown(inventory, category, field, delta) {
+  const breakdown = inventory.inventory_breakdown.value;
+  let row = breakdown.find(r => r.value.category.value === category);
+  if (!row) {
+    row = { value: { category: { value: category }, qty_total: { value: "0" }, qty_warehouse: { value: "0" }, qty_sewer: { value: "0" }, qty_embroidery: { value: "0" }, qty_completed: { value: "0" } } };
+    breakdown.push(row);
+  }
+  const current = parseInt(row.value[field].value);
+  row.value[field] = { value: current + delta };
+  row.value.qty_total = { value: parseInt(row.value.qty_total.value) + delta };
+  return breakdown;
+}
+
+// Existing WooCommerce Endpoint
 makeRouter.post('/process-order', (req, res, next) => {
   try {
-    // The request body is expected to be an array of line items.
     const lineItems = req.body;
     if (!Array.isArray(lineItems)) {
       throw new Error('Invalid data: expected request body to be an array of line items');
     }
 
-    // Process each line item.
     const transformedLineItems = lineItems.map(item => {
       let transformedMetaData = {};
-      let currentEmbroideryGroup = null; // To track the active embroidery context
+      let currentEmbroideryGroup = null;
 
-      // Process the meta data (key is "metaData" in the payload).
       if (Array.isArray(item.metaData)) {
         item.metaData.forEach(meta => {
-          // Only process entries with a string value (ignore if the value is an array)
           if (meta.value && typeof meta.value === 'string' && !meta.valueArray) {
             if (meta.displayKey && meta.displayKey.endsWith("Embroidery Position")) {
-              // Derive a group name by removing " Position" from the displayKey.
               const groupName = meta.displayKey.replace(" Position", "");
               currentEmbroideryGroup = groupName;
               if (!transformedMetaData[currentEmbroideryGroup]) {
@@ -98,23 +138,113 @@ makeRouter.post('/process-order', (req, res, next) => {
       return {
         ID: item.id,
         Name: item.name,
-        productId: item.productId, // Needed for bag lookup and for the new product_id field.
+        productId: item.productId,
         Quantity: item.quantity,
         Subtotal: item.subtotal,
         Total: item.total,
-        Taxes: item.taxes, // Expected to be an empty array in your example.
+        Taxes: item.taxes,
         MetaData: transformedMetaData
       };
     });
 
-    // Build the final order object.
     const finalOrderObject = { order: transformedLineItems };
-
-    // Transform the final order object into an array of simplified Kintone records.
     const simpleRecords = transformToSimpleRecords(finalOrderObject);
-
-    // Send the array of simplified records as the JSON response.
     return res.status(200).json(simpleRecords);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Order Approval Webhook
+makeRouter.post('/order-webhook', async (req, res, next) => {
+  try {
+    const { record } = req.body;
+    if (record.Status.value !== 'Approved') return res.sendStatus(200);
+
+    const customer = `${record.first_name.value} ${record.last_name.value} - ${record.company_name.value}`;
+    const bagDetails = record.order_details_table_website.value;
+
+    for (const item of bagDetails) {
+      const qty = parseInt(item.value.qty_website.value);
+      const bagModel = item.value.bag_model_website.value;
+
+      const inventoryRes = await kintoneRequest('GET', `/v1/record.json?app=${INVENTORY_APP_ID}&query=bag_model="${bagModel}"`);
+      const inventory = inventoryRes.data.record;
+      const inventoryId = inventory.$id.value;
+
+      const stockLevels = {
+        'qty_warehouse': parseInt(inventory.qty_warehouse.value)
+      };
+
+      if (stockLevels.qty_warehouse < qty) {
+        throw new Error(`Insufficient stock for ${bagModel} in warehouse`);
+      }
+
+      const update = {
+        qty_warehouse: { value: stockLevels.qty_warehouse - qty },
+        inventory_breakdown: { value: updateBreakdown(inventory, 'Ordered', 'qty_warehouse', qty) }
+      };
+
+      await kintoneRequest('PUT', `/v1/record.json`, {
+        app: INVENTORY_APP_ID,
+        id: inventoryId,
+        record: update
+      });
+    }
+
+    const processRecords = transformToProcessRecords(record, customer, 'Office');
+    await kintoneRequest('POST', `/v1/records.json?app=${PROCESS_APP_ID}`, {
+      records: processRecords
+    });
+
+    res.sendStatus(200);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Process Webhook (Bag Movement)
+makeRouter.post('/process-webhook', async (req, res, next) => {
+  try {
+    const { record } = req.body;
+    const currentStatus = record.Status.value;
+    const bagModel = record.bag_model.value;
+    const previousStatus = record.Previous_Status?.value;
+    if (!previousStatus || previousStatus === currentStatus) return res.sendStatus(200);
+
+    const inventoryRes = await kintoneRequest('GET', `/v1/record.json?app=${INVENTORY_APP_ID}&query=bag_model="${bagModel}"`);
+    const inventory = inventoryRes.data.record;
+    const inventoryId = inventory.$id.value;
+
+    const statusMap = {
+      'Office': null, // No stock impact until assigned
+      'Warehouse': 'qty_warehouse',
+      'Sewing': 'qty_sewer',
+      'Embroidery': 'qty_embroidery',
+      'Completed': 'qty_completed'
+    };
+
+    const update = {};
+    const updatedBreakdown = inventory.inventory_breakdown.value.slice();
+
+    if (statusMap[previousStatus]) {
+      update[statusMap[previousStatus]] = { value: parseInt(inventory[statusMap[previousStatus]].value) - 1 };
+      updateBreakdown(inventory, 'Ordered', statusMap[previousStatus], -1);
+    }
+    if (statusMap[currentStatus]) {
+      update[statusMap[currentStatus]] = { value: parseInt(inventory[statusMap[currentStatus]].value) + 1 };
+      updateBreakdown(inventory, 'Ordered', statusMap[currentStatus], 1);
+    }
+
+    update.inventory_breakdown = { value: updatedBreakdown };
+
+    await kintoneRequest('PUT', `/v1/record.json`, {
+      app: INVENTORY_APP_ID,
+      id: inventoryId,
+      record: update
+    });
+
+    res.sendStatus(200);
   } catch (error) {
     next(error);
   }
