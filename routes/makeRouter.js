@@ -1,18 +1,20 @@
+require('dotenv').config();
+
 const express = require('express');
 const axios = require('axios');
 const makeRouter = express.Router();
 
 // Kintone Configuration
 const KINTONE_DOMAIN = 'https://wattsbags.kintone.com';
-const ORDER_APP_ID = '13';
-const PROCESS_APP_ID = '23';
-const INVENTORY_APP_ID = '11';
+const ORDER_APP_ID = process.env.ORDER_APP_ID;
+const PROCESS_APP_ID = process.env.PROCESS_APP_ID;
+const INVENTORY_APP_ID = process.env.INVENTORY_APP_ID;
 
-// API Tokens for each app
+// API Tokens from environment variables
 const API_TOKENS = {
-  [ORDER_APP_ID]: 'gHoZ02FI3jbrUCBx5Y3yifsvwBgfvwKWnC4nBHZm', // Token for Order App (App 13)
-  [PROCESS_APP_ID]: 'KvSmBmRBU9PLw00XIQIdX6kwC3pA4oIw3HvPvx77', // Token for Order Management App (App 23)
-  [INVENTORY_APP_ID]: 'ShpfTLQatk1J4nTsIZ3tfmGtGatd1IsZQvkFiZol' // Token for Inventory App (App 11)
+  [ORDER_APP_ID]: process.env.ORDER_APP_TOKEN,
+  [PROCESS_APP_ID]: process.env.PROCESS_APP_TOKEN,
+  [INVENTORY_APP_ID]: process.env.INVENTORY_APP_TOKEN
 };
 
 async function kintoneRequest(method, endpoint, data = {}, appId) {
@@ -166,7 +168,7 @@ makeRouter.post('/order-webhook', async (req, res, next) => {
 
       const update = {
         general_stock_qty: { value: stockLevels.general_stock_qty - qty },
-        qty_warehouse: { value: parseInt(inventory.qty_warehouse.value || 0) + qty }
+        qty_office: { value: parseInt(inventory.qty_office.value || 0) + qty }
       };
 
       await kintoneRequest('PUT', `/v1/record.json`, {
@@ -201,9 +203,10 @@ makeRouter.post('/process-webhook', async (req, res, next) => {
     const inventoryId = inventory.$id.value;
 
     const statusMap = {
-      'Office': null,
-      'Art': null,
-      'Cutting': null,
+      'Office': 'qty_office',
+      'Warehouse': 'qty_warehouse',
+      'Art': 'qty_art',
+      'Cutting': 'qty_cutting',
       'Need Sewer Assigned': 'qty_sewer',
       'Sewer Assigned': 'qty_sewer',
       'Sewer Pickup Ready': 'qty_sewer',
