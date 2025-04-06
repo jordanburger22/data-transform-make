@@ -19,11 +19,6 @@ async function kintoneRequest(method, endpoint, data = {}) {
   return axios(config);
 }
 
-/**
- * Combines embroidery group information from the metaData object into a single multi-line string.
- * For each embroidery group (determined by the presence of a "Position" property),
- * the function formats all the key/value pairs in that group, skipping any where the value is "No".
- */
 function combineEmbroideryInfo(metaData) {
   let combined = '';
   for (const key in metaData) {
@@ -40,10 +35,6 @@ function combineEmbroideryInfo(metaData) {
   return combined.trim();
 }
 
-/**
- * Transforms the final order object into an array of simplified records suitable for Kintone,
- * where each key maps directly to its value.
- */
 function transformToSimpleRecords(finalOrderObject) {
   return finalOrderObject.order.map(item => {
     const embroideryInfo = combineEmbroideryInfo(item.MetaData);
@@ -82,19 +73,6 @@ function transformToProcessRecords(data, customer, startStatus) {
   return records;
 }
 
-function updateBreakdown(inventory, category, field, delta) {
-  const breakdown = inventory.inventory_breakdown.value;
-  let row = breakdown.find(r => r.value.category.value === category);
-  if (!row) {
-    row = { value: { category: { value: category }, qty_total: { value: "0" }, qty_warehouse: { value: "0" }, qty_sewer: { value: "0" }, qty_embroidery: { value: "0" }, qty_completed: { value: "0" } } };
-    breakdown.push(row);
-  }
-  const current = parseInt(row.value[field].value);
-  row.value[field] = { value: current + delta };
-  row.value.qty_total = { value: parseInt(row.value.qty_total.value) + delta };
-  return breakdown;
-}
-
 // Existing WooCommerce Endpoint
 makeRouter.post('/process-order', (req, res, next) => {
   try {
@@ -113,9 +91,7 @@ makeRouter.post('/process-order', (req, res, next) => {
             if (meta.displayKey && meta.displayKey.endsWith("Embroidery Position")) {
               const groupName = meta.displayKey.replace(" Position", "");
               currentEmbroideryGroup = groupName;
-              if (!transformedMetaData[currentEmbroideryGroup]) {
-                transformedMetaData[currentEmbroideryGroup] = {};
-              }
+              if (!transformedMetaData[currentEmbroideryGroup]) transformedMetaData[currentEmbroideryGroup] = {};
               transformedMetaData[currentEmbroideryGroup]["Position"] = meta.value;
             } else if (
               meta.displayKey === "Line 1" ||
@@ -123,11 +99,8 @@ makeRouter.post('/process-order', (req, res, next) => {
               meta.displayKey === "Line 2" ||
               meta.displayKey === "Line 2 Text Font"
             ) {
-              if (currentEmbroideryGroup) {
-                transformedMetaData[currentEmbroideryGroup][meta.displayKey] = meta.value;
-              } else {
-                transformedMetaData[meta.displayKey] = meta.value;
-              }
+              if (currentEmbroideryGroup) transformedMetaData[currentEmbroideryGroup][meta.displayKey] = meta.value;
+              else transformedMetaData[meta.displayKey] = meta.value;
             } else {
               transformedMetaData[meta.displayKey] = meta.value;
             }
@@ -173,16 +146,16 @@ makeRouter.post('/order-webhook', async (req, res, next) => {
       const inventoryId = inventory.$id.value;
 
       const stockLevels = {
-        'qty_warehouse': parseInt(inventory.qty_warehouse.value)
+        'general_stock_qty': parseInt(inventory.general_stock_qty.value || 0)
       };
 
-      if (stockLevels.qty_warehouse < qty) {
-        throw new Error(`Insufficient stock for ${bagModel} in warehouse`);
+      if (stockLevels.general_stock_qty < qty) {
+        throw new Error(`Insufficient stock for ${bagModel} in general stock`);
       }
 
       const update = {
-        qty_warehouse: { value: stockLevels.qty_warehouse - qty },
-        inventory_breakdown: { value: updateBreakdown(inventory, 'Ordered', 'qty_warehouse', qty) }
+        general_stock_qty: { value: stockLevels.general_stock_qty - qty },
+        qty_warehouse: { value: parseInt(inventory.qty_warehouse.value || 0) + qty }
       };
 
       await kintoneRequest('PUT', `/v1/record.json`, {
@@ -217,26 +190,31 @@ makeRouter.post('/process-webhook', async (req, res, next) => {
     const inventoryId = inventory.$id.value;
 
     const statusMap = {
-      'Office': null, // No stock impact until assigned
-      'Warehouse': 'qty_warehouse',
-      'Sewing': 'qty_sewer',
+      'Office': null,
+      'Art': null,
+      'Cutting': null,
+      'Need Sewer Assigned': 'qty_sewer',
+      'Sewer Assigned': 'qty_sewer',
+      'Sewer Pickup Ready': 'qty_sewer',
+      'With Sewer': 'qty_sewer',
       'Embroidery': 'qty_embroidery',
-      'Completed': 'qty_completed'
+      'Complete': null
     };
 
     const update = {};
-    const updatedBreakdown = inventory.inventory_breakdown.value.slice();
 
     if (statusMap[previousStatus]) {
-      update[statusMap[previousStatus]] = { value: parseInt(inventory[statusMap[previousStatus]].value) - 1 };
-      updateBreakdown(inventory, 'Ordered', statusMap[previousStatus], -1);
+      const currentQty = parseInt(inventory[statusMap[previousStatus]].value || 0);
+      update[statusMap[previousStatus]] = { value: currentQty - 1 };
     }
     if (statusMap[currentStatus]) {
-      update[statusMap[currentStatus]] = { value: parseInt(inventory[statusMap[currentStatus]].value) + 1 };
-      updateBreakdown(inventory, 'Ordered', statusMap[currentStatus], 1);
+      const currentQty = parseInt(inventory[statusMap[currentStatus]].value || 0);
+      update[statusMap[currentStatus]] = { value: currentQty + 1 };
     }
-
-    update.inventory_breakdown = { value: updatedBreakdown };
+    if (currentStatus === 'Complete') {
+      const currentCompleted = parseInt(inventory.qty_completed.value || 0);
+      update.qty_completed = { value: currentCompleted + 1 };
+    }
 
     await kintoneRequest('PUT', `/v1/record.json`, {
       app: INVENTORY_APP_ID,
