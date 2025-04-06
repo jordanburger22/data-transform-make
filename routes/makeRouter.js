@@ -6,9 +6,9 @@ const makeRouter = express.Router();
 
 // Kintone Configuration
 const KINTONE_DOMAIN = 'https://wattsbags.kintone.com';
-const ORDER_APP_ID = process.env.ORDER_APP_ID;
-const PROCESS_APP_ID = process.env.PROCESS_APP_ID;
-const INVENTORY_APP_ID = process.env.INVENTORY_APP_ID;
+const ORDER_APP_ID = parseInt(process.env.ORDER_APP_ID, 10); // Parse as integer
+const PROCESS_APP_ID = parseInt(process.env.PROCESS_APP_ID, 10); // Parse as integer
+const INVENTORY_APP_ID = parseInt(process.env.INVENTORY_APP_ID, 10); // Parse as integer
 
 // API Tokens from environment variables
 const API_TOKENS = {
