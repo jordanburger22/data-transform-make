@@ -6,9 +6,9 @@ const makeRouter = express.Router();
 
 // Kintone Configuration
 const KINTONE_DOMAIN = 'https://wattsbags.kintone.com';
-const ORDER_APP_ID = parseInt(process.env.ORDER_APP_ID, 10); // Parse as integer
-const PROCESS_APP_ID = parseInt(process.env.PROCESS_APP_ID, 10); // Parse as integer
-const INVENTORY_APP_ID = parseInt(process.env.INVENTORY_APP_ID, 10); // Parse as integer
+const ORDER_APP_ID = parseInt(process.env.ORDER_APP_ID, 10);
+const PROCESS_APP_ID = parseInt(process.env.PROCESS_APP_ID, 10);
+const INVENTORY_APP_ID = parseInt(process.env.INVENTORY_APP_ID, 10);
 
 // API Tokens from environment variables
 const API_TOKENS = {
@@ -26,9 +26,14 @@ async function kintoneRequest(method, endpoint, data = {}, appId) {
   const config = {
     method,
     url: `${KINTONE_DOMAIN}/k${endpoint}`, // Using /k/v1/ endpoints
-    headers: { 'X-Cybozu-API-Token': token },
-    data
+    headers: { 'X-Cybozu-API-Token': token }
   };
+
+  // Only include the data field for non-GET requests
+  if (method.toUpperCase() !== 'GET') {
+    config.data = data;
+  }
+
   return axios(config);
 }
 
