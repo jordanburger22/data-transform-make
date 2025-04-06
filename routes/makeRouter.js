@@ -25,7 +25,7 @@ async function kintoneRequest(method, endpoint, data = {}, appId) {
 
   const config = {
     method,
-    url: `${KINTONE_DOMAIN}${endpoint}`,
+    url: `${KINTONE_DOMAIN}/k${endpoint}`, // Using /k/v1/ endpoints
     headers: { 'X-Cybozu-API-Token': token },
     data
   };
@@ -74,10 +74,12 @@ function transformToProcessRecords(data, customer, startStatus) {
   data.order_details_table_website.value.forEach(item => {
     const qty = parseInt(item.value.qty_website.value);
     const bagModel = item.value.bag_model_website.value;
+    const inventoryId = item.value.inventory_id.value; // Get inventory_id from the subtable
     for (let i = 0; i < qty; i++) {
       records.push({
         customer: { value: customer },
         bag_model: { value: bagModel },
+        inventory_id: { value: inventoryId }, // Pass inventory_id to Order Management App
         Status: { value: startStatus },
         date_ordered: { value: new Date().toISOString().split('T')[0] }
       });
@@ -153,10 +155,15 @@ makeRouter.post('/order-webhook', async (req, res, next) => {
     for (const item of bagDetails) {
       const qty = parseInt(item.value.qty_website.value);
       const bagModel = item.value.bag_model_website.value;
+      const inventoryId = item.value.inventory_id.value; // Get inventory_id from the subtable
 
-      const inventoryRes = await kintoneRequest('GET', `/v1/record.json?app=${INVENTORY_APP_ID}&query=bag_model="${bagModel}"`, {}, INVENTORY_APP_ID);
+      if (!inventoryId) {
+        throw new Error(`No inventory_id found for bag model: ${bagModel}. Please ensure the Lookup field is set.`);
+      }
+
+      // Fetch the full inventory record by ID
+      const inventoryRes = await kintoneRequest('GET', `/v1/record.json?app=${INVENTORY_APP_ID}&id=${inventoryId}`, {}, INVENTORY_APP_ID);
       const inventory = inventoryRes.data.record;
-      const inventoryId = inventory.$id.value;
 
       const stockLevels = {
         'general_stock_qty': parseInt(inventory.general_stock_qty.value || 0)
@@ -195,12 +202,17 @@ makeRouter.post('/process-webhook', async (req, res, next) => {
     const { record } = req.body;
     const currentStatus = record.Status.value;
     const bagModel = record.bag_model.value;
+    const inventoryId = record.inventory_id.value; // Get inventory_id from the Order Management App record
     const previousStatus = record.Previous_Status?.value;
     if (!previousStatus || previousStatus === currentStatus) return res.sendStatus(200);
 
-    const inventoryRes = await kintoneRequest('GET', `/v1/record.json?app=${INVENTORY_APP_ID}&query=bag_model="${bagModel}"`, {}, INVENTORY_APP_ID);
+    if (!inventoryId) {
+      throw new Error(`No inventory_id found for bag model: ${bagModel}`);
+    }
+
+    // Fetch the full inventory record by ID
+    const inventoryRes = await kintoneRequest('GET', `/v1/record.json?app=${INVENTORY_APP_ID}&id=${inventoryId}`, {}, INVENTORY_APP_ID);
     const inventory = inventoryRes.data.record;
-    const inventoryId = inventory.$id.value;
 
     const statusMap = {
       'Office': 'qty_office',
