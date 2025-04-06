@@ -7,13 +7,24 @@ const KINTONE_DOMAIN = 'https://wattsbags.kintone.com';
 const ORDER_APP_ID = '13';
 const PROCESS_APP_ID = '23';
 const INVENTORY_APP_ID = '11';
-const API_TOKEN = 'gHoZ02FI3jbrUCBx5Y3yifsvwBgfvwKWnC4nBHZm';
 
-async function kintoneRequest(method, endpoint, data = {}) {
+// API Tokens for each app
+const API_TOKENS = {
+  [ORDER_APP_ID]: 'gHoZ02FI3jbrUCBx5Y3yifsvwBgfvwKWnC4nBHZm', // Token for Order App (App 13)
+  [PROCESS_APP_ID]: 'KvSmBmRBU9PLw00XIQIdX6kwC3pA4oIw3HvPvx77', // Token for Order Management App (App 23)
+  [INVENTORY_APP_ID]: 'ShpfTLQatk1J4nTsIZ3tfmGtGatd1IsZQvkFiZol' // Token for Inventory App (App 11)
+};
+
+async function kintoneRequest(method, endpoint, data = {}, appId) {
+  const token = API_TOKENS[appId];
+  if (!token) {
+    throw new Error(`No API token found for app ID ${appId}`);
+  }
+
   const config = {
     method,
     url: `${KINTONE_DOMAIN}${endpoint}`,
-    headers: { 'X-Cybozu-API-Token': API_TOKEN },
+    headers: { 'X-Cybozu-API-Token': token },
     data
   };
   return axios(config);
@@ -141,7 +152,7 @@ makeRouter.post('/order-webhook', async (req, res, next) => {
       const qty = parseInt(item.value.qty_website.value);
       const bagModel = item.value.bag_model_website.value;
 
-      const inventoryRes = await kintoneRequest('GET', `/v1/record.json?app=${INVENTORY_APP_ID}&query=bag_model="${bagModel}"`);
+      const inventoryRes = await kintoneRequest('GET', `/v1/record.json?app=${INVENTORY_APP_ID}&query=bag_model="${bagModel}"`, {}, INVENTORY_APP_ID);
       const inventory = inventoryRes.data.record;
       const inventoryId = inventory.$id.value;
 
@@ -162,13 +173,13 @@ makeRouter.post('/order-webhook', async (req, res, next) => {
         app: INVENTORY_APP_ID,
         id: inventoryId,
         record: update
-      });
+      }, INVENTORY_APP_ID);
     }
 
     const processRecords = transformToProcessRecords(record, customer, 'Office');
     await kintoneRequest('POST', `/v1/records.json?app=${PROCESS_APP_ID}`, {
       records: processRecords
-    });
+    }, PROCESS_APP_ID);
 
     res.sendStatus(200);
   } catch (error) {
@@ -185,7 +196,7 @@ makeRouter.post('/process-webhook', async (req, res, next) => {
     const previousStatus = record.Previous_Status?.value;
     if (!previousStatus || previousStatus === currentStatus) return res.sendStatus(200);
 
-    const inventoryRes = await kintoneRequest('GET', `/v1/record.json?app=${INVENTORY_APP_ID}&query=bag_model="${bagModel}"`);
+    const inventoryRes = await kintoneRequest('GET', `/v1/record.json?app=${INVENTORY_APP_ID}&query=bag_model="${bagModel}"`, {}, INVENTORY_APP_ID);
     const inventory = inventoryRes.data.record;
     const inventoryId = inventory.$id.value;
 
@@ -220,7 +231,7 @@ makeRouter.post('/process-webhook', async (req, res, next) => {
       app: INVENTORY_APP_ID,
       id: inventoryId,
       record: update
-    });
+    }, INVENTORY_APP_ID);
 
     res.sendStatus(200);
   } catch (error) {
